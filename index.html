@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mic to Piano Note + Piano Roll</title>
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    text-align: center;
+    padding: 20px;
+  }
+  h1 {
+    font-size: 28px;
+    margin-bottom: 10px;
+  }
+  #note {
+    font-size: 72px;
+    margin: 20px 0;
+  }
+  #calibration-section {
+    margin-top: 20px;
+  }
+  input[type=range], input[type=number] {
+    width: 300px;
+    font-size: 16px;
+    padding: 5px;
+  }
+  #log-controls {
+    margin-top: 20px;
+  }
+  #log-controls button {
+    background: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+  #log-controls button:hover {
+    background: #444;
+  }
+  #log {
+    background: #000;
+    color: #0f0;
+    text-align: left;
+    padding: 10px;
+    margin-top: 10px;
+    height: 200px;
+    overflow-y: scroll;
+    border: 1px solid #333;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  .log-green { color: #0f0; }
+  .log-yellow { color: #ff0; }
+  .log-red { color: #f33; }
+
+  /* Piano roll container */
+  #piano-roll-container {
+    margin-top: 30px;
+    border: 1px solid #333;
+    background: #222;
+    position: relative;
+    width: 100%;
+    max-width: 900px;
+    height: 300px;
+    margin-left: auto;
+    margin-right: auto;
+    overflow-x: auto;
+    white-space: nowrap;
+    font-size: 12px;
+    user-select: none;
+  }
+  #piano-roll {
+    position: relative;
+    height: 100%;
+    white-space: nowrap;
+  }
+  /* vertical note labels */
+  .note-label {
+    position: absolute;
+    left: 0;
+    width: 40px;
+    color: #999;
+    text-align: right;
+    padding-right: 5px;
+    font-family: monospace;
+    pointer-events: none;
+    user-select: none;
+    height: 20px;
+    line-height: 20px;
+  }
+  /* time grid lines */
+  .time-grid {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #444;
+  }
+  /* note block style */
+  .note-block {
+    position: absolute;
+    height: 18px;
+    background: #0f0;
+    border-radius: 3px;
+    opacity: 0.9;
+    font-size: 10px;
+    color: #000;
+    text-align: center;
+    line-height: 18px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  footer {
+  font-size: 12px;
+  color: #666;
+  margin-top: 40px;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+  <footer>
+  &copy; 2025 Mustafa Özdil — Mic to MIDI
+</footer>
+
+<h1>Microphone Input to Piano Note & Piano Roll</h1>
+<button onclick="startMic()">Start</button>
+<div id="note">--</div>
+
+<div id="calibration-section">
+  Calibration: <span id="calVal">0</span> semitones<br />
+  <input type="range" id="calibration" min="-48" max="48" value="0" />
+</div>
+
+<div id="bpm-section" style="margin-top:20px;">
+  BPM: <input type="number" id="bpm" min="20" max="300" value="140" />
+</div>
+
+<div id="log-controls">
+  <button onclick="clearLog()">Clear Terminal</button>
+</div>
+<div id="log"></div>
+
+<div id="piano-roll-container">
+  <div id="piano-roll"></div>
+</div>
+
+<script>
+const NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const MIN_MIDI = 24; // C1
+const MAX_MIDI = 96; // C7
+const NOTE_HEIGHT = 20; // px height per note row
+const PIXELS_PER_BEAT = 40; // width of one beat in px
+
+let audioCtx, analyser, floatData;
+let midiHistory = [];
+const MAX_HISTORY = 15;
+
+let lastLoggedNote = null;
+let repeatCount = 0;
+let lastNoteTime = performance.now();
+
+let startTime = null; // piano roll timing start
+
+function freqToMidi(f) {
+  return 69 + 12 * Math.log2(f / 440);
+}
+function noteName(midi) {
+  const n = Math.round(midi);
+  return NOTES[n % 12] + Math.floor(n / 12 - 1);
+}
+// convert note name string to MIDI number, e.g. C4 -> 60
+function noteNameToMidi(noteStr) {
+  const match = noteStr.match(/^([A-G]#?)(-?\d)$/);
+  if (!match) return null;
+  const [_, note, octaveStr] = match;
+  const octave = parseInt(octaveStr);
+  const noteIndex = NOTES.indexOf(note);
+  if (noteIndex < 0) return null;
+  return noteIndex + (octave + 1) * 12;
+}
+
+function mode(arr) {
+  const count = {};
+  let max = 0, res = null;
+  for (let v of arr) {
+    count[v] = (count[v] || 0) + 1;
+    if (count[v] > max) {
+      max = count[v];
+      res = v;
+    }
+  }
+  return res;
+}
+
+function logNote(note, count, msElapsed) {
+  const el = document.getElementById('log');
+  let cls = 'log-red';
+  if (count >= 7) cls = 'log-green';
+  else if (count >= 3) cls = 'log-yellow';
+  const entry = document.createElement('div');
+  entry.className = cls;
+  entry.textContent = `${note} (${count}×, ${msElapsed}ms)`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+
+  if (cls === 'log-green') {
+    addNoteToPianoRoll(note, msElapsed);
+  }
+}
+
+function clearLog() {
+  document.getElementById('log').innerHTML = '';
+  lastLoggedNote = null;
+  repeatCount = 0;
+  startTime = null;
+  clearPianoRoll();
+}
+
+document.getElementById('calibration').oninput = e => {
+  document.getElementById('calVal').innerText = e.target.value;
+};
+
+function startMic() {
+  if (audioCtx) return;
+  audioCtx = new AudioContext();
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    floatData = new Float32Array(analyser.fftSize);
+    src.connect(analyser);
+    update();
+  });
+}
+
+function update() {
+  analyser.getFloatTimeDomainData(floatData);
+  const { freq } = autoCorrelate(floatData, audioCtx.sampleRate);
+  if (freq > 0) {
+    let midi = freqToMidi(freq);
+    const cal = parseInt(document.getElementById('calibration').value);
+    midi += cal;
+    const rounded = Math.round(midi);
+    midiHistory.push(rounded);
+    if (midiHistory.length > MAX_HISTORY) midiHistory.shift();
+    const stable = mode(midiHistory);
+    const name = noteName(stable);
+    if (name === "C#8") return; // skip glitch note
+
+    document.getElementById('note').innerText = name;
+
+    if (name === lastLoggedNote) {
+      repeatCount++;
+    } else {
+      if (lastLoggedNote !== null) {
+        const now = performance.now();
+        const elapsed = Math.round(now - lastNoteTime);
+        logNote(lastLoggedNote, repeatCount, elapsed);
+        lastNoteTime = now;
+      }
+      lastLoggedNote = name;
+      repeatCount = 1;
+    }
+  }
+  requestAnimationFrame(update);
+}
+
+function autoCorrelate(buf, sampleRate) {
+  let SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) rms += buf[i]*buf[i];
+  rms = Math.sqrt(rms/SIZE);
+  if (rms < 0.01) return { freq: -1 }; // too quiet
+
+  let r = new Array(SIZE).fill(0);
+  for (let lag = 0; lag < SIZE; lag++) {
+    for (let i = 0; i < SIZE - lag; i++) {
+      r[lag] += buf[i] * buf[i + lag];
+    }
+  }
+  let d = 0;
+  while (d < SIZE/2 && r[d] > r[d+1]) d++;
+  let maxPos = -1, maxVal = -Infinity;
+  for (let i = d; i < SIZE/2; i++) {
+    if (r[i] > maxVal) {
+      maxVal = r[i];
+      maxPos = i;
+    }
+  }
+  if (maxPos <= 0) return { freq: -1 };
+
+  // parabolic interpolation for better accuracy
+  let x1 = r[maxPos-1];
+  let x2 = r[maxPos];
+  let x3 = r[maxPos+1];
+  let a = (x1 + x3 - 2*x2)/2;
+  let b = (x3 - x1)/2;
+  let lag = maxPos - b/(2*a);
+
+  let freq = sampleRate / lag;
+  if (freq < 27.5 || freq > 4186) return { freq: -1 }; // piano range A0 to C8
+  return { freq };
+}
+
+// PIANO ROLL LOGIC
+
+function clearPianoRoll() {
+  const pr = document.getElementById('piano-roll');
+  pr.innerHTML = '';
+  drawNoteLabels();
+  drawTimeGrid();
+}
+
+// Draw vertical note labels on left (C7 top to C1 bottom)
+function drawNoteLabels() {
+  const pr = document.getElementById('piano-roll');
+  for(let midi=MAX_MIDI; midi >= MIN_MIDI; midi--) {
+    const label = document.createElement('div');
+    label.className = 'note-label';
+    label.style.top = ((MAX_MIDI - midi)*NOTE_HEIGHT) + 'px';
+    label.textContent = noteName(midi);
+    pr.appendChild(label);
+  }
+}
+
+// Draw vertical time grid lines every beat for ~16 beats (4 bars if 4/4)
+function drawTimeGrid() {
+  const pr = document.getElementById('piano-roll');
+  const beatsToShow = 16;
+  for(let i=0; i<=beatsToShow; i++) {
+    const line = document.createElement('div');
+    line.className = 'time-grid';
+    line.style.left = (i*PIXELS_PER_BEAT) + 40 + 'px'; // offset 40px for note labels
+    pr.appendChild(line);
+  }
+}
+
+// Add a note block to piano roll
+function addNoteToPianoRoll(note, msElapsed) {
+  const bpm = parseInt(document.getElementById('bpm').value) || 140;
+  const msPerBeat = 60000 / bpm;
+
+  if (startTime === null) startTime = performance.now();
+  const now = performance.now();
+  const elapsedFromStart = now - startTime;
+
+  // X position in beats and px
+  const posBeats = elapsedFromStart / msPerBeat;
+  const durBeats = msElapsed / msPerBeat;
+
+  const x = posBeats * PIXELS_PER_BEAT + 40; // 40 px offset for labels
+  const width = Math.max(durBeats * PIXELS_PER_BEAT, 5);
+
+  // Get MIDI number for vertical position
+  const midiNum = noteNameToMidi(note);
+  if (midiNum === null) return;
+  if (midiNum < MIN_MIDI || midiNum > MAX_MIDI) return;
+
+  // Y position: top is C7, bottom is C1
+  const y = (MAX_MIDI - midiNum) * NOTE_HEIGHT;
+
+  const pr = document.getElementById('piano-roll');
+  const noteBlock = document.createElement('div');
+  noteBlock.className = 'note-block';
+  noteBlock.style.left = x + 'px';
+  noteBlock.style.top = y + 'px';
+  noteBlock.style.width = width + 'px';
+  noteBlock.textContent = note;
+  pr.appendChild(noteBlock);
+}
+
+// init piano roll on page load
+clearPianoRoll();
+
+</script>
+
+</body>
+</html>
