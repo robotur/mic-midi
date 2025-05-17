@@ -1,6 +1,6 @@
 # Mic to Piano Note & Piano Roll Visualizer
 
-A real-time browser-based tool that captures microphone input, detects musical notes, and displays them in both a terminal-style log and a visual piano roll. Built entirely with HTML, CSS, and JavaScript—no frameworks or external dependencies required.
+A real-time browser-based tool that captures microphone input, detects musical notes, and displays them in both a terminal-style log and a visual piano roll. Built entirely with HTML. No frameworks or external dependencies required.
 
 ---
 
