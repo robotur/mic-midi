@@ -16,7 +16,7 @@
     margin-bottom: 10px;
   }
   #note {
-    font-size: 72px;
+    font-size: 68px;
     margin: 20px 0;
   }
   #calibration-section {
@@ -114,17 +114,15 @@
     white-space: nowrap;
   }
   footer {
-  font-size: 12px;
-  color: #666;
-  margin-top: 40px;
-  text-align: center;
-}
+    font-size: 12px;
+    color: #666;
+    margin-top: 20px;
+    text-align: center;
+    user-select: none;
+  }
 </style>
 </head>
 <body>
-  <footer>
-  &copy; 2025 Mustafa Özdil — Mic to MIDI
-</footer>
 
 <h1>Microphone Input to Piano Note & Piano Roll</h1>
 <button onclick="startMic()">Start</button>
@@ -147,6 +145,10 @@
 <div id="piano-roll-container">
   <div id="piano-roll"></div>
 </div>
+
+<footer>
+  &copy; 2025 Mustafa Özdil — Mic to MIDI
+</footer>
 
 <script>
 const NOTES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -172,7 +174,6 @@ function noteName(midi) {
   const n = Math.round(midi);
   return NOTES[n % 12] + Math.floor(n / 12 - 1);
 }
-// convert note name string to MIDI number, e.g. C4 -> 60
 function noteNameToMidi(noteStr) {
   const match = noteStr.match(/^([A-G]#?)(-?\d)$/);
   if (!match) return null;
@@ -198,9 +199,12 @@ function mode(arr) {
 
 function logNote(note, count, msElapsed) {
   const el = document.getElementById('log');
+  if(count < 3) return; // skip notes played less than 3 times
+
   let cls = 'log-red';
   if (count >= 7) cls = 'log-green';
   else if (count >= 3) cls = 'log-yellow';
+
   const entry = document.createElement('div');
   entry.className = cls;
   entry.textContent = `${note} (${count}×, ${msElapsed}ms)`;
@@ -249,7 +253,7 @@ function update() {
     if (midiHistory.length > MAX_HISTORY) midiHistory.shift();
     const stable = mode(midiHistory);
     const name = noteName(stable);
-    if (name === "C#8") return; // skip glitch note
+    if (stable > 96 || stable < 24) return; // skip out-of-range notes
 
     document.getElementById('note').innerText = name;
 
@@ -279,104 +283,104 @@ function autoCorrelate(buf, sampleRate) {
   let r = new Array(SIZE).fill(0);
   for (let lag = 0; lag < SIZE; lag++) {
     for (let i = 0; i < SIZE - lag; i++) {
-      r[lag] += buf[i] * buf[i + lag];
+      r[lag] += buf[i] * buf[i+lag];
     }
   }
   let d = 0;
-  while (d < SIZE/2 && r[d] > r[d+1]) d++;
-  let maxPos = -1, maxVal = -Infinity;
-  for (let i = d; i < SIZE/2; i++) {
-    if (r[i] > maxVal) {
-      maxVal = r[i];
-      maxPos = i;
+  while (r[d] > r[d+1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < SIZE; i++) {
+    if (r[i] > maxval) {
+      maxval = r[i];
+      maxpos = i;
     }
   }
-  if (maxPos <= 0) return { freq: -1 };
+  let T0 = maxpos;
 
-  // parabolic interpolation for better accuracy
-  let x1 = r[maxPos-1];
-  let x2 = r[maxPos];
-  let x3 = r[maxPos+1];
+  let x1 = r[T0-1], x2 = r[T0], x3 = r[T0+1];
   let a = (x1 + x3 - 2*x2)/2;
   let b = (x3 - x1)/2;
-  let lag = maxPos - b/(2*a);
+  if (a) T0 = T0 - b/(2*a);
 
-  let freq = sampleRate / lag;
-  if (freq < 27.5 || freq > 4186) return { freq: -1 }; // piano range A0 to C8
-  return { freq };
+  let freq = sampleRate/T0;
+  if (freq > 50 && freq < 2000) return { freq };
+  return { freq: -1 };
 }
 
-// PIANO ROLL LOGIC
+// Piano Roll implementation
+const pianoRoll = document.getElementById('piano-roll');
+const pianoRollContainer = document.getElementById('piano-roll-container');
 
-function clearPianoRoll() {
-  const pr = document.getElementById('piano-roll');
-  pr.innerHTML = '';
-  drawNoteLabels();
-  drawTimeGrid();
-}
-
-// Draw vertical note labels on left (C7 top to C1 bottom)
+// Draw vertical note labels once
 function drawNoteLabels() {
-  const pr = document.getElementById('piano-roll');
-  for(let midi=MAX_MIDI; midi >= MIN_MIDI; midi--) {
+  for(let midi = MIN_MIDI; midi <= MAX_MIDI; midi++) {
+    const y = (MAX_MIDI - midi) * NOTE_HEIGHT;
     const label = document.createElement('div');
     label.className = 'note-label';
-    label.style.top = ((MAX_MIDI - midi)*NOTE_HEIGHT) + 'px';
+    label.style.top = y + 'px';
     label.textContent = noteName(midi);
-    pr.appendChild(label);
+    pianoRollContainer.appendChild(label);
   }
 }
+drawNoteLabels();
 
-// Draw vertical time grid lines every beat for ~16 beats (4 bars if 4/4)
+// Draw vertical time grid lines (for beats)
 function drawTimeGrid() {
-  const pr = document.getElementById('piano-roll');
-  const beatsToShow = 16;
-  for(let i=0; i<=beatsToShow; i++) {
+  // Remove previous lines first
+  const oldLines = pianoRoll.querySelectorAll('.time-grid');
+  oldLines.forEach(e => e.remove());
+
+  let beatsToDraw = 40; // enough for ~10 sec at 140bpm
+  const width = beatsToDraw * PIXELS_PER_BEAT;
+  pianoRoll.style.width = width + 'px';
+
+  for(let i = 0; i <= beatsToDraw; i++) {
     const line = document.createElement('div');
     line.className = 'time-grid';
-    line.style.left = (i*PIXELS_PER_BEAT) + 40 + 'px'; // offset 40px for note labels
-    pr.appendChild(line);
+    line.style.left = (i * PIXELS_PER_BEAT) + 'px';
+    pianoRoll.appendChild(line);
+  }
+}
+drawTimeGrid();
+
+function clearPianoRoll() {
+  // Remove all note-blocks but keep labels and grid
+  const blocks = pianoRoll.querySelectorAll('.note-block');
+  blocks.forEach(b => b.remove());
+  startTime = null;
+}
+
+function addNoteToPianoRoll(noteNameStr, durationMs) {
+  if (!startTime) startTime = performance.now();
+  const elapsedSec = (performance.now() - startTime) / 1000;
+
+  const midiNum = noteNameToMidi(noteNameStr);
+  if (!midiNum || midiNum < MIN_MIDI || midiNum > MAX_MIDI) return;
+
+  const y = (MAX_MIDI - midiNum) * NOTE_HEIGHT;
+  const x = elapsedSec * PIXELS_PER_BEAT * (parseInt(document.getElementById('bpm').value) / 60);
+
+  // width based on duration, convert ms to beats: durationMs / 60000 * bpm
+  const bpm = parseInt(document.getElementById('bpm').value);
+  const beats = (durationMs / 60000) * bpm;
+  const width = beats * PIXELS_PER_BEAT;
+
+  const noteBlock = document.createElement('div');
+  noteBlock.className = 'note-block';
+  noteBlock.style.top = y + 'px';
+  noteBlock.style.left = x + 'px';
+  noteBlock.style.width = width + 'px';
+  noteBlock.style.background = 'limegreen';
+  noteBlock.textContent = noteNameStr;
+  pianoRoll.appendChild(noteBlock);
+
+  // auto-scroll piano roll container horizontally
+  const containerWidth = pianoRollContainer.clientWidth;
+  if (x + width > pianoRollContainer.scrollLeft + containerWidth - 20) {
+    pianoRollContainer.scrollLeft = x + width - containerWidth + 20;
   }
 }
 
-// Add a note block to piano roll
-function addNoteToPianoRoll(note, msElapsed) {
-  const bpm = parseInt(document.getElementById('bpm').value) || 140;
-  const msPerBeat = 60000 / bpm;
-
-  if (startTime === null) startTime = performance.now();
-  const now = performance.now();
-  const elapsedFromStart = now - startTime;
-
-  // X position in beats and px
-  const posBeats = elapsedFromStart / msPerBeat;
-  const durBeats = msElapsed / msPerBeat;
-
-  const x = posBeats * PIXELS_PER_BEAT + 40; // 40 px offset for labels
-  const width = Math.max(durBeats * PIXELS_PER_BEAT, 5);
-
-  // Get MIDI number for vertical position
-  const midiNum = noteNameToMidi(note);
-  if (midiNum === null) return;
-  if (midiNum < MIN_MIDI || midiNum > MAX_MIDI) return;
-
-  // Y position: top is C7, bottom is C1
-  const y = (MAX_MIDI - midiNum) * NOTE_HEIGHT;
-
-  const pr = document.getElementById('piano-roll');
-  const noteBlock = document.createElement('div');
-  noteBlock.className = 'note-block';
-  noteBlock.style.left = x + 'px';
-  noteBlock.style.top = y + 'px';
-  noteBlock.style.width = width + 'px';
-  noteBlock.textContent = note;
-  pr.appendChild(noteBlock);
-}
-
-// init piano roll on page load
-clearPianoRoll();
-
 </script>
-
 </body>
 </html>
