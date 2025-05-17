@@ -47,5 +47,5 @@ No build tools or installations are required. Simply:
 
 ```bash
 git clone https://github.com/robotur/mic-midi.git
-cd mic-midi-visualizer
+cd mic-midi
 open index.html
