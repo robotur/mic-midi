@@ -46,6 +46,6 @@ A real-time browser-based tool that captures microphone input, detects musical n
 No build tools or installations are required. Simply:
 
 ```bash
-git clone https://github.com/your-username/mic-midi-visualizer.git
+git clone https://github.com/robotur/mic-midi.git
 cd mic-midi-visualizer
 open index.html
